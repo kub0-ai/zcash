@@ -1,0 +1,85 @@
+name: Watch Upstream Release
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get latest upstream release
+        id: upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LATEST=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/zcash/zcash/releases" \
+            | jq -r '[.[] | select(.prerelease == false)] | first | .tag_name')
+          if [ -z "$LATEST" ] || [ "$LATEST" = "null" ]; then
+            echo "Could not detect upstream version"
+            exit 1
+          fi
+          VERSION="${LATEST#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Latest upstream: $LATEST ($VERSION)"
+
+      - name: Read current version
+        id: current
+        run: |
+          CURRENT=$(cat VERSION | tr -d '[:space:]')
+          echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "Current: $CURRENT"
+
+      - name: Check if update needed
+        id: check
+        run: |
+          if [ "${{ steps.upstream.outputs.version }}" = "${{ steps.current.outputs.version }}" ]; then
+            echo "Already up to date"
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New version available: ${{ steps.upstream.outputs.version }}"
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release PR
+        if: steps.check.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.upstream.outputs.version }}"
+          BRANCH="release/${VERSION}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+
+          echo "$VERSION" > VERSION
+
+          git add VERSION
+          git commit -m "release: bump to v${VERSION}"
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --title "Release ${VERSION}" \
+            --body "$(cat <<EOF
+          ## Zcash ${VERSION}
+
+          Upstream release: https://github.com/zcash/zcash/releases/tag/${{ steps.upstream.outputs.tag }}
+
+          ### Action required
+          - [ ] Review upstream release notes for breaking changes
+          - [ ] Verify ARM64 build still compiles (Tier 3 support)
+
+          Merging this PR triggers a build of \`ghcr.io/kub0-ai/zcash:${VERSION}\`.
+          EOF
+          )"
