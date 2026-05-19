@@ -59,6 +59,12 @@ jobs:
           VERSION="${{ steps.upstream.outputs.version }}"
           BRANCH="release/${VERSION}"
 
+          # Skip if release branch already exists (PR already created)
+          if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+            echo "Branch $BRANCH already exists — release PR was already created"
+            exit 0
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
