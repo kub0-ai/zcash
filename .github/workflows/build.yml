@@ -1,17 +1,62 @@
 name: Build and Push
 
+# EOL FAIL-CLOSED (2026-07-30): default path refuses GHCR publish of zcashd as live mainnet.
+# Optional workflow_dispatch.allow_archival_build=true only for historical/offline images.
+# See DEPRECATION.md / README.md.
+
 on:
   push:
     branches: [main]
-    paths: ['docker/**', 'VERSION', 'KEYS']
+    paths: ['docker/**', 'VERSION', 'KEYS', 'DEPRECATION.md', 'README.md']
   workflow_dispatch:
+    inputs:
+      allow_archival_build:
+        description: 'ARCHIVAL ONLY — build/push image knowing zcashd is EOS-halted (NOT mainnet-ready)'
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: write
   packages: write
 
 jobs:
+  eol-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      archival: ${{ steps.decide.outputs.archival }}
+    steps:
+      - name: Decide EOL vs archival override
+        id: decide
+        run: |
+          set -euo pipefail
+          EVENT="${{ github.event_name }}"
+          ALLOW="${{ github.event.inputs.allow_archival_build || 'false' }}"
+          if [ "$EVENT" = "workflow_dispatch" ] && [ "$ALLOW" = "true" ]; then
+            echo "archival=true" >> "$GITHUB_OUTPUT"
+            echo "ARCHIVAL override accepted — image is NOT mainnet-ready (zcashd EOS-halted)."
+            exit 0
+          fi
+          cat <<'EOF'
+          ============================================================
+          EOL / DO NOT DEPLOY — build is fail-closed
+          ============================================================
+          This repository must not silently publish ghcr.io/kub0-ai/zcash
+          as a live mainnet node. Upstream zcashd 6.20.0 hit EOS halt at
+          height 3417100 (2026-07-18) and refuses to run on current mainnet.
+
+          - push to main: always fail-closed (no GHCR :latest)
+          - workflow_dispatch: set allow_archival_build=true only for
+            historical/offline builds (still not mainnet-ready)
+
+          Migrate to Zebra (zebrad) + Zallet. See DEPRECATION.md.
+          ============================================================
+          EOF
+          exit 1
+
   build:
+    needs: eol-gate
+    if: needs.eol-gate.outputs.archival == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -20,6 +65,17 @@ jobs:
       - name: Read VERSION
         id: version
         run: echo "version=$(cat VERSION | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Read KEYS fingerprints
+        id: keys
+        run: |
+          # Strip comments/blank lines; space-separate fingerprints for build-arg
+          FPRS=$(grep -E '^[0-9A-Fa-f]{40}$' KEYS | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+          if [ -z "$FPRS" ]; then
+            echo "ERROR: KEYS has no 40-hex fingerprints"; exit 1
+          fi
+          echo "fprs=$FPRS" >> "$GITHUB_OUTPUT"
+          echo "Using apt key fingerprints: $FPRS"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -34,7 +90,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
+      - name: Build and push (archival tags only — no :latest)
         uses: docker/build-push-action@v6
         with:
           context: ./docker
@@ -42,15 +98,14 @@ jobs:
           push: true
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
+            APT_KEY_FPRS=${{ steps.keys.outputs.fprs }}
           tags: |
-            ghcr.io/kub0-ai/zcash:${{ steps.version.outputs.version }}
-            ghcr.io/kub0-ai/zcash:latest
+            ghcr.io/kub0-ai/zcash:${{ steps.version.outputs.version }}-archival
+            ghcr.io/kub0-ai/zcash:archival
           cache-from: type=registry,ref=ghcr.io/kub0-ai/zcash:buildcache
           cache-to: type=registry,ref=ghcr.io/kub0-ai/zcash:buildcache,mode=max
 
-      - name: Create git tag
+      - name: Note — no git tag / no :latest
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "v${{ steps.version.outputs.version }}" -m "Zcash ${{ steps.version.outputs.version }}" || true
-          git push origin "v${{ steps.version.outputs.version }}" || true
+          echo "Archival image pushed without moving :latest and without creating a release tag."
+          echo "zcashd ${{ steps.version.outputs.version }} remains EOS-halted for mainnet."

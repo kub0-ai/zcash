@@ -1,50 +1,37 @@
 name: Watch Upstream Release
 
+# EOL FAIL-CLOSED (2026-07-30): zcashd 6.20.0 is past EOS halt (height 3417100, 2026-07-18).
+# This workflow must NOT auto-bump VERSION or git push origin HEAD:main.
+# See DEPRECATION.md / README.md — migrate to Zebra / Zallet.
+
 on:
   schedule:
     - cron: '0 6 * * *'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Detect upstream + bump main if needed
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: EOL — refuse unattended release chain
         run: |
           set -euo pipefail
-          UPSTREAM_REPO="zcash/zcash"
-          LATEST=$(curl -s -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/${UPSTREAM_REPO}/releases?per_page=30" \
-            | jq -r '
-              [.[] | select(.prerelease == false and .draft == false) | .tag_name
-               | ltrimstr("v")
-               | select(test("^[0-9]+(\\.[0-9]+){1,3}$"))]
-              | sort_by(split(".") | map(tonumber))
-              | last
-            ')
-          if [ -z "$LATEST" ] || [ "$LATEST" = "null" ]; then
-            echo "Could not detect upstream version"; exit 1
-          fi
-          CURRENT=$(tr -d '[:space:]' < VERSION)
-          echo "upstream=$LATEST current=$CURRENT"
-          if [ "$LATEST" = "$CURRENT" ]; then
-            echo "Already up to date"
-            exit 0
-          fi
-          # Direct bump on main → build.yml (paths: VERSION) rebuilds the image.
-          # Org setting blocks Actions from opening PRs; direct commit is the reliable path.
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          echo "$LATEST" > VERSION
-          git add VERSION
-          git commit -m "release: bump to v${LATEST} (auto from ${UPSTREAM_REPO})"
-          git push origin HEAD:main
-          echo "Pushed VERSION ${CURRENT} → ${LATEST}; build.yml will remake the image"
+          cat <<'EOF'
+          ============================================================
+          EOL / DO NOT DEPLOY — watch-release is fail-closed
+          ============================================================
+          kub0-ai/zcash packages zcashd only. Upstream End-of-Support
+          halt for 6.20.0 was height 3417100 (2026-07-18). Unmodified
+          zcashd will not run on current mainnet.
+
+          Auto-bump of VERSION → push main → GHCR :latest is DISABLED.
+          Migrate operators to Zebra (zebrad) and Zallet.
+
+          Docs: DEPRECATION.md, README.md
+          Audit: agent-memory/audit/zcash/, agent-memory/audit/upstream-zcash/
+          ============================================================
+          EOF
+          exit 1

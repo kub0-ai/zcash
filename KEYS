@@ -1,1 +1,11 @@
-3FE63B67F85EA808DE9B880E6DEF3BAF272766C0
+# apt.z.cash signing keys — fingerprints asserted in docker/Dockerfile before dearmor.
+# Source: https://apt.z.cash/zcash.asc (verified 2026-07-30)
+#
+# 033834DD49DECF9DBB9934BC6C93CA8E58E26AB1  Zcash Open Development Lab (ZODL)
+# B1C9095EAA1848DBB54D9DDA1D05FDC66B372CFE  Zcash Master Signing Key (Electric Coin Company)
+#
+# HISTORICAL (EXPIRED, NOT USED BY DOCKERFILE — do not re-add as trust anchor):
+# 3FE63B67F85EA808DE9B880E6DEF3BAF272766C0  former "Zcash Master Signing Key" expired 2024-10-30
+#
+033834DD49DECF9DBB9934BC6C93CA8E58E26AB1
+B1C9095EAA1848DBB54D9DDA1D05FDC66B372CFE
