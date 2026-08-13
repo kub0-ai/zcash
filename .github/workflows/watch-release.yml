@@ -5,8 +5,14 @@ name: Watch Upstream Release
 # See DEPRECATION.md / README.md — migrate to Zebra / Zallet.
 
 on:
-  schedule:
-    - cron: '0 6 * * *'
+  # No schedule. zcashd is end-of-support, so there is no upstream release worth
+  # watching, and this job's only action is to print the banner below and exit 1.
+  # On a daily cron that meant one red run per day carrying zero signal, which
+  # only trains operators to ignore this repo's status. DEPRECATION.md already
+  # documents the schedule as disabled; this makes the workflow match the doc.
+  #
+  # The publish gate is build.yml's eol-gate job, which is unchanged and still
+  # fails closed on every push to main.
   workflow_dispatch:
 
 permissions:
