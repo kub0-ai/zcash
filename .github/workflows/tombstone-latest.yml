@@ -1,0 +1,126 @@
+name: Tombstone :latest
+
+# Repoint ghcr.io/kub0-ai/zcash:latest at an image that refuses to run.
+#
+# WHY NOT JUST DELETE THE TAG: GHCR has no per-tag delete. `:latest` and
+# `:6.20.0` resolve to the SAME package version (one digest, two tags), so
+# deleting "the version tagged latest" destroys the archival 6.20.0 image with
+# it. Versioned tags are worth keeping for forensics; `:latest` is not.
+#
+# The hazard being closed: DEPRECATION.md tells operators not to pull :latest,
+# but the tag still resolves to a zcashd that shuts itself down past the EOS
+# halt height. A doc cannot stop `docker pull`. This makes the failure loud and
+# self-explaining at the point of use instead.
+#
+# This workflow is deliberately NOT in build.yml's push-paths
+# (docker/**, VERSION, KEYS, DEPRECATION.md, README.md), so adding or editing it
+# does not fire the eol-gate red run. It is workflow_dispatch only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "tombstone" to repoint :latest'
+        required: true
+        default: ''
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  tombstone:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check confirmation
+        run: |
+          set -euo pipefail
+          [ "${{ inputs.confirm }}" = "tombstone" ] || {
+            echo "refusing: confirm input was not the literal string 'tombstone'"; exit 1; }
+
+      - name: Record what :latest points at now
+        run: |
+          set -euo pipefail
+          T=$(curl -s "https://ghcr.io/token?scope=repository:kub0-ai/zcash:pull" | jq -r .token)
+          for tag in latest 6.20.0; do
+            D=$(curl -sI -H "Authorization: Bearer $T" \
+              -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json" \
+              "https://ghcr.io/v2/kub0-ai/zcash/manifests/${tag}" \
+              | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2}')
+            echo "before: ${tag} -> ${D}"
+            echo "before: ${tag} -> ${D}" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Build tombstone image
+        run: |
+          set -euo pipefail
+          mkdir -p tomb
+          cat > tomb/Dockerfile <<'DOCKER'
+          FROM scratch
+          COPY notice /notice
+          LABEL org.opencontainers.image.source="https://github.com/kub0-ai/zcash"
+          LABEL org.opencontainers.image.description="END OF SUPPORT — zcashd cannot sync mainnet. Use ghcr.io/kub0-ai/zebra."
+          ENTRYPOINT ["/notice"]
+          DOCKER
+          # Fully static binary so the image can be FROM scratch: prints the
+          # banner on stderr and exits 1, failing loudly under any runtime.
+          # Plain -static (not -nostdlib): write()/_exit() are libc symbols and
+          # would not link without it.
+          cat > notice.c <<'SRC'
+          #include <stdio.h>
+          #include <stdlib.h>
+          int main(void) {
+            fputs(
+              "\n=============================================================\n"
+              "ghcr.io/kub0-ai/zcash is END OF SUPPORT - DO NOT DEPLOY\n"
+              "=============================================================\n"
+              "zcashd 6.20.0 halts past block height 3417100 (2026-07-18) and\n"
+              "will not sync current mainnet. This tag is a tombstone.\n\n"
+              "Use the supported replacement:\n"
+              "    ghcr.io/kub0-ai/zebra   (zebrad, Zcash full node)\n\n"
+              "Archival zcashd images remain at :6.20.0 and :6.11.0 for\n"
+              "forensic use only. See DEPRECATION.md.\n"
+              "=============================================================\n\n",
+              stderr);
+            return 1;
+          }
+          SRC
+          gcc -static -o tomb/notice notice.c
+          chmod +x tomb/notice
+          file tomb/notice
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push as :latest
+        uses: docker/build-push-action@v7
+        with:
+          context: ./tomb
+          push: true
+          # Only :latest moves. Versioned tags are untouched.
+          tags: ghcr.io/kub0-ai/zcash:latest
+
+      - name: Verify the tags diverged
+        run: |
+          set -euo pipefail
+          T=$(curl -s "https://ghcr.io/token?scope=repository:kub0-ai/zcash:pull" | jq -r .token)
+          get() { curl -sI -H "Authorization: Bearer $T" \
+            -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json" \
+            "https://ghcr.io/v2/kub0-ai/zcash/manifests/$1" | tr -d '\r' \
+            | awk 'tolower($1)=="docker-content-digest:"{print $2}'; }
+          L=$(get latest); V=$(get 6.20.0)
+          echo "after: latest  -> ${L}"
+          echo "after: 6.20.0  -> ${V}"
+          [ -n "${V}" ] || { echo "FAIL: 6.20.0 no longer resolves — archival tag was lost"; exit 1; }
+          [ "${L}" != "${V}" ] || { echo "FAIL: latest still shares 6.20.0's digest"; exit 1; }
+          {
+            echo ""
+            echo "### Tombstoned"
+            echo ""
+            echo "- \`:latest\` -> \`${L}\` (refuses to run)"
+            echo "- \`:6.20.0\` -> \`${V}\` (archival, preserved)"
+          } >> "$GITHUB_STEP_SUMMARY"
